@@ -1,0 +1,309 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ETH Wrapper Fair‑Value Curve (Auto Price + ETH Tracker)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1"></script>
+  <style>
+    .chart-wrap{position:relative;height:500px;}
+    @media (max-width:768px){.chart-wrap{height:360px;}}
+    .spin{animation:spin 1s linear infinite;}
+    @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+  <div class="max-w-6xl mx-auto p-6">
+    <h1 class="text-3xl font-bold text-center mb-6">SBET &amp; BMNR — Fair‑Value Curves</h1>
+
+    <!-- ETH price tracker -->
+    <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-4 mb-6 flex flex-wrap justify-between items-center gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-3 h-3 rounded-full bg-slate-400" id="ethDot"></div>
+        <span class="text-sm text-slate-500" id="ethStatus">Fetching ETH price…</span>
+      </div>
+      <div class="text-right">
+        <div class="text-2xl font-bold" id="ethLive">$--</div>
+        <div class="text-xs" id="ethChange">24h: --%</div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="grid md:grid-cols-2 gap-6 mb-8">
+      <div class="bg-white p-5 rounded-xl shadow">
+        <h2 class="text-xl font-semibold mb-4">Global Assumptions</h2>
+        <div class="mb-6">
+          <label class="block text-sm font-medium">Premium to NAV Multiple:
+            <span id="premiumLabel" class="font-semibold">1.50×</span></label>
+          <input type="range" id="premiumSlider" min="0.5" max="3.0" step="0.05" value="1.5" class="w-full accent-indigo-600">
+        </div>
+        <div>
+          <label class="block text-sm font-medium">ETH Price Range (for curves)</label>
+          <div class="flex flex-wrap gap-3 items-center text-sm mt-1">
+            <span>Min</span><input type="number" id="ethMin" value="1000" class="w-24 border rounded p-1">
+            <span>Max</span><input type="number" id="ethMax" value="10000" class="w-24 border rounded p-1">
+            <span>Step</span><input type="number" id="ethStep" value="100" class="w-24 border rounded p-1">
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white p-5 rounded-xl shadow">
+        <h2 class="text-xl font-semibold mb-4">Company Inputs</h2>
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left">
+              <th class="pb-1">Ticker</th>
+              <th class="pb-1">ETH Held</th>
+              <th class="pb-1">Cash (USD)</th>
+              <th class="pb-1">Diluted Shares</th>
+              <th class="pb-1">Price (auto)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="border-t">
+              <td class="pt-2 font-semibold">SBET</td>
+              <td><input type="number" id="sbetEth" value="280706" class="w-24 border rounded p-1"></td>
+              <td><input type="number" id="sbetCash" value="257000000" class="w-32 border rounded p-1"></td>
+              <td><input type="number" id="sbetShr" value="100000000" class="w-32 border rounded p-1"></td>
+              <td class="font-semibold" id="sbetLivePrice">$--</td>
+            </tr>
+            <tr class="border-t">
+              <td class="pt-2 font-semibold">BMNR</td>
+              <td><input type="number" id="bmnrEth" value="300657" class="w-24 border rounded p-1"></td>
+              <td><input type="number" id="bmnrCash" value="0" class="w-32 border rounded p-1"></td>
+              <td><input type="number" id="bmnrShr" value="56253249" class="w-32 border rounded p-1"></td>
+              <td class="font-semibold" id="bmnrLivePrice">$--</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="text-xs text-slate-500 mt-2 flex items-center gap-1">
+          <span id="priceStatusIcon" class="inline-block w-3 h-3 rounded-full bg-slate-400"></span>
+          <span id="priceStatus">Waiting for price fetch…</span>
+        </p>
+      </div>
+    </div>
+
+    <!-- Line Chart -->
+    <div class="bg-white p-5 rounded-xl shadow mb-8">
+      <h2 class="text-xl font-semibold mb-4">Line Chart — ETH Price vs. Value / Share</h2>
+      <div class="chart-wrap">
+        <canvas id="lineChart"></canvas>
+      </div>
+      <p class="text-xs text-slate-500 mt-3">Solid lines = NAV/share; Dashed lines = Fair value (NAV × premium). Vertical grey line = current ETH spot.</p>
+    </div>
+
+    <!-- Premium chart -->
+    <div class="bg-white p-5 rounded-xl shadow">
+      <h2 class="text-xl font-semibold mb-4">Premium Needed to Reach Your Entry</h2>
+      <div class="chart-wrap">
+        <canvas id="premChart"></canvas>
+      </div>
+      <p class="text-xs text-slate-500 mt-3">Required premium multiple at each ETH price for SBET ($32) & BMNR ($45) to hit your entries.</p>
+    </div>
+
+    <footer class="mt-10 text-xs text-center text-slate-500">
+      Built with Tailwind CSS & Chart.js • Prices refresh hourly while the page is open.
+    </footer>
+  </div>
+
+<script>
+function genRange(min,max,step){const a=[];for(let v=min;v<=max;v+=step)a.push(v);return a;}
+function calcNav(e,c,s,p){return (e*p + c)/s;}
+function usd(v){return '$'+v.toLocaleString(undefined,{maximumFractionDigits:2});}
+function pct(v){return (v*100).toFixed(2)+'%';}
+
+let currentEthSpot=null;
+
+const ctxLine=document.getElementById('lineChart').getContext('2d');
+const ctxPrem=document.getElementById('premChart').getContext('2d');
+
+const lineChart=new Chart(ctxLine,{
+  type:'line',
+  data:{labels:[],datasets:[
+    {label:'SBET NAV/sh', data:[], borderWidth:2, borderColor:'#6366f1', pointRadius:0},
+    {label:'SBET Fair/sh', data:[], borderWidth:2, borderColor:'#6366f1', borderDash:[6,4], pointRadius:0},
+    {label:'BMNR NAV/sh', data:[], borderWidth:2, borderColor:'#10b981', pointRadius:0},
+    {label:'BMNR Fair/sh', data:[], borderWidth:2, borderColor:'#10b981', borderDash:[6,4], pointRadius:0}
+  ]},
+  options:{
+    responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    scales:{y:{beginAtZero:false,ticks:{callback:v=>'$'+v}}},
+    plugins:{
+      annotation:{
+        annotations:{
+          ethLine:{
+            type:'line',
+            xMin:0,xMax:0,
+            borderColor:'#6b7280',
+            borderWidth:2,
+            label:{
+              display:true,
+              backgroundColor:'#6b7280',
+              color:'#fff',
+              content:'ETH spot',
+              position:'end',
+              rotation:90,
+              yAdjust:-10
+            }
+          }
+        }
+      }
+    }
+  }
+});
+
+const premChart=new Chart(ctxPrem,{
+  type:'line',
+  data:{labels:[],datasets:[
+    {label:'SBET premium to hit $32', data:[], borderWidth:2, borderColor:'#f97316', pointRadius:0},
+    {label:'BMNR premium to hit $45', data:[], borderWidth:2, borderColor:'#ef4444', pointRadius:0}
+  ]},
+  options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    scales:{y:{beginAtZero:true}}}
+});
+
+let livePrices={SBET:null,BMNR:null};
+
+async function fetchETH(){
+  const dot=document.getElementById('ethDot');
+  const txt=document.getElementById('ethStatus');
+  try{
+    dot.className='w-3 h-3 rounded-full bg-indigo-500 spin';
+    txt.textContent='Fetching ETH price…';
+    const url1='https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true';
+    const r=await fetch(url1);
+    const j=await r.json();
+    currentEthSpot=j.ethereum.usd;
+    const ch=j.ethereum.usd_24h_change/100;
+    document.getElementById('ethLive').textContent=usd(currentEthSpot);
+    document.getElementById('ethChange').textContent='24h: '+pct(ch);
+    dot.className='w-3 h-3 rounded-full bg-green-500';
+    txt.textContent='Updated '+new Date().toLocaleString();
+    updateEthAnnotation();
+  }catch(e){
+    console.error(e);
+    dot.className='w-3 h-3 rounded-full bg-red-500';
+    txt.textContent='ETH fetch failed.';
+  }
+}
+
+function updateEthAnnotation(){
+  if(currentEthSpot===null) return;
+  const ann = lineChart.options.plugins.annotation.annotations.ethLine;
+  ann.xMin=currentEthSpot;
+  ann.xMax=currentEthSpot;
+  lineChart.update();
+}
+
+async function tryFetch(url, parseFn){
+  const res=await fetch(url);
+  if(!res.ok) throw new Error('HTTP '+res.status);
+  const txt=await res.text();
+  return parseFn(txt);
+}
+function parseYahoo(txt){
+  const js=JSON.parse(txt);
+  const out={};
+  js.quoteResponse.result.forEach(q=>{
+    out[q.symbol]=q.regularMarketPrice||q.previousClose;
+  });
+  return out;
+}
+function parseStooqCSV(txt){
+  const lines=txt.trim().split(/\r?\n/);
+  const head=lines[0].split(',');
+  const sIdx=head.indexOf('Symbol');
+  const cIdx=head.indexOf('Close');
+  const out={};
+  for(let i=1;i<lines.length;i++){
+    const cols=lines[i].split(',');
+    out[cols[sIdx].replace('.US','').toUpperCase()]=parseFloat(cols[cIdx]);
+  }
+  return out;
+}
+
+async function fetchEquityPrices(){
+  const icon=document.getElementById('priceStatusIcon');
+  const status=document.getElementById('priceStatus');
+  icon.className='inline-block w-3 h-3 rounded-full bg-indigo-500 spin';
+  status.textContent='Fetching latest prices…';
+  const yahooURL='https://query1.finance.yahoo.com/v7/finance/quote?symbols=SBET,BMNR';
+  const proxies=[
+    'https://r.jina.ai/http://query1.finance.yahoo.com/v7/finance/quote?symbols=SBET,BMNR',
+    'https://thingproxy.freeboard.io/fetch/https://query1.finance.yahoo.com/v7/finance/quote?symbols=SBET,BMNR',
+    'https://api.allorigins.win/raw?url='+encodeURIComponent(yahooURL)
+  ];
+  try{
+    livePrices=await tryFetch(yahooURL,parseYahoo);
+  }catch(e){
+    for(const p of proxies){
+      try{ livePrices=await tryFetch(p,parseYahoo); break; }catch(_){}
+    }
+    if(!livePrices.SBET || !livePrices.BMNR){
+      try{
+        livePrices=await tryFetch('https://stooq.com/q/l/?s=sbet.us,bmnr.us&f=sd2t2ohlcv&h&e=csv',parseStooqCSV);
+      }catch(e2){ console.error('All fail',e,e2); }
+    }
+  }
+  if(livePrices.SBET && livePrices.BMNR){
+    document.getElementById('sbetLivePrice').textContent=usd(livePrices.SBET);
+    document.getElementById('bmnrLivePrice').textContent=usd(livePrices.BMNR);
+    icon.className='inline-block w-3 h-3 rounded-full bg-green-500';
+    status.textContent='Updated '+new Date().toLocaleString();
+  }else{
+    icon.className='inline-block w-3 h-3 rounded-full bg-red-500';
+    status.textContent='Price fetch failed. Using manual inputs.';
+  }
+}
+
+function recalc(){
+  const premium=Number(document.getElementById('premiumSlider').value);
+  document.getElementById('premiumLabel').textContent=premium.toFixed(2)+'×';
+  const ethMin=Number(document.getElementById('ethMin').value);
+  const ethMax=Number(document.getElementById('ethMax').value);
+  const ethStep=Number(document.getElementById('ethStep').value);
+
+  const sbet={ethHeld:Number(document.getElementById('sbetEth').value),cash:Number(document.getElementById('sbetCash').value),shares:Number(document.getElementById('sbetShr').value),entry:32};
+  const bmnr={ethHeld:Number(document.getElementById('bmnrEth').value),cash:Number(document.getElementById('bmnrCash').value),shares:Number(document.getElementById('bmnrShr').value),entry:45};
+
+  const xs=genRange(ethMin,ethMax,ethStep);
+  const sNav=[],sFair=[],bNav=[],bFair=[],needS=[],needB=[];
+
+  xs.forEach(p=>{
+    const nS=calcNav(sbet.ethHeld,sbet.cash,sbet.shares,p);
+    const nB=calcNav(bmnr.ethHeld,bmnr.cash,bmnr.shares,p);
+    sNav.push(nS); bNav.push(nB);
+    sFair.push(nS*premium); bFair.push(nB*premium);
+    needS.push(sbet.entry/nS); needB.push(bmnr.entry/nB);
+  });
+
+  lineChart.data.labels=xs;
+  lineChart.data.datasets[0].data=sNav;
+  lineChart.data.datasets[1].data=sFair;
+  lineChart.data.datasets[2].data=bNav;
+  lineChart.data.datasets[3].data=bFair;
+  lineChart.update();
+
+  premChart.data.labels=xs;
+  premChart.data.datasets[0].data=needS;
+  premChart.data.datasets[1].data=needB;
+  premChart.update();
+
+  updateEthAnnotation();
+}
+
+document.querySelectorAll('input').forEach(el=>el.addEventListener('input', recalc));
+
+window.addEventListener('DOMContentLoaded', ()=>{
+  recalc();
+  fetchETH();
+  fetchEquityPrices();
+  setInterval(fetchETH,60*60*1000);
+  setInterval(fetchEquityPrices,60*60*1000);
+});
+</script>
+</body>
+</html>
